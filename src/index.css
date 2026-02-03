@@ -253,3 +253,81 @@ body {
   justify-content: center;
   padding-bottom: 12px;
 }
+/* ===== Mobile optimization ===== */
+@media (max-width: 640px) {
+  .wrap {
+    padding: 10px;
+    gap: 10px;
+  }
+
+  /* Header: 3列固定 → 1列スタック */
+  .header {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+  .hLeft, .hRight {
+    justify-content: space-between;
+    flex-wrap: wrap;
+  }
+  .hTitle {
+    text-align: left;
+    font-size: 16px;
+    line-height: 1.2;
+  }
+
+  /* Buttons: 触りやすいサイズ */
+  .btn {
+    padding: 10px 12px;
+    font-size: 14px;
+    border-radius: 12px;
+    min-height: 44px; /* iOS推奨タップサイズ */
+  }
+
+  /* Forms: 2列（ラベル/入力）→ 1列 */
+  .row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+    margin-bottom: 12px;
+  }
+  .label {
+    font-size: 12px;
+  }
+  .input {
+    font-size: 16px; /* iOSの自動ズーム回避 */
+    padding: 12px 12px;
+    border-radius: 12px;
+    min-height: 44px;
+  }
+
+  /* KV表示も1列に */
+  .kvRow {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+  .kvVal.big {
+    font-size: 24px;
+  }
+
+  /* Calendar: タップしやすく */
+  .cell {
+    height: 58px;
+    border-radius: 14px;
+    padding: 10px;
+  }
+  .dayNum {
+    font-size: 15px;
+  }
+
+  /* List items: 押しやすく */
+  .listItem {
+    padding: 12px;
+    border-radius: 14px;
+  }
+}
+
+/* iPhoneのノッチ/ホームバー余白 */
+@supports (padding: env(safe-area-inset-bottom)) {
+  .wrap {
+    padding-bottom: calc(14px + env(safe-area-inset-bottom));
+  }
+}
