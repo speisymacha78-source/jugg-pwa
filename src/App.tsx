@@ -1,6 +1,5 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import {
-  MACHINE_LABEL,
   uid,
   todayKey,
   clampInt,
@@ -14,6 +13,7 @@ import {
   importBackupFile,
 } from "./lib/storage";
 import { infer } from "./lib/inference";
+import { machines, machinesById } from "./machines";
 
 type View =
   | { kind: "calendar" }
@@ -89,91 +89,6 @@ function sessionStats(play: Play) {
   const t = bonusTotals(play);
   return { games, big: t.bb, reg: t.rb };
 }
-
-/* =========================
-   Signed integer input (mobile-safe: no '-' key needed)
-   - Use +/- toggle + absolute value numeric input
-   - Empty => undefined
-   ========================= */
-type Sign = 1 | -1;
-
-function SignedIntInput(props: {
-  value?: number;
-  onChange: (v: number | undefined) => void;
-  placeholder?: string;
-  className?: string;
-}) {
-  const { value, onChange, placeholder, className } = props;
-  const [sign, setSign] = useState<Sign>(value != null && value < 0 ? -1 : 1);
-  const [absStr, setAbsStr] = useState<string>(
-    value == null ? "" : String(Math.abs(value))
-  );
-
-  useEffect(() => {
-    const nextSign: Sign = value != null && value < 0 ? -1 : 1;
-    const nextAbs = value == null ? "" : String(Math.abs(value));
-    setSign(nextSign);
-    setAbsStr(nextAbs);
-  }, [value]);
-
-  const commitValue = (nextSign: Sign, nextAbsStr: string) => {
-    const t = (nextAbsStr ?? "").trim();
-    if (!t) {
-      onChange(undefined);
-      return;
-    }
-    const n = Number.parseInt(t, 10);
-    if (!Number.isFinite(n)) {
-      onChange(undefined);
-      return;
-    }
-    onChange(nextSign * n);
-  };
-
-  return (
-    <div className="signedInt">
-      <div className="signedIntToggle">
-        <button
-          type="button"
-          className={"btn mini " + (sign === 1 ? "primary" : "")}
-          onClick={() => {
-            const ns: Sign = 1;
-            setSign(ns);
-            commitValue(ns, absStr);
-          }}
-        >
-          +
-        </button>
-        <button
-          type="button"
-          className={"btn mini " + (sign === -1 ? "primary" : "")}
-          onClick={() => {
-            const ns: Sign = -1;
-            setSign(ns);
-            commitValue(ns, absStr);
-          }}
-        >
-          −
-        </button>
-      </div>
-
-      <input
-        className={className ?? "input"}
-        inputMode="numeric"
-        pattern="\d*"
-        value={absStr}
-        placeholder={placeholder ?? "0"}
-        onChange={(e) => {
-          const v = e.target.value;
-          if (!/^\d*$/.test(v)) return;
-          setAbsStr(v);
-          commitValue(sign, v);
-        }}
-      />
-    </div>
-  );
-}
-
 
 /* =========================
    Counter Screen component (UPDATED)
@@ -748,7 +663,7 @@ export default function App() {
               onClick={() => {
                 const newPlay: Play = {
                   id: uid("play"),
-                  machine: "MYJUG",
+                  machine: (machines[0]?.id ?? "MYJUG"),
                   baseGamesTotal: 0,
                   baseBigTotal: 0,
                   baseRegTotal: 0,
@@ -791,7 +706,7 @@ export default function App() {
               <div className="card" key={p.id}>
                 <div className="row between">
                   <div>
-                    <div className="title">{MACHINE_LABEL[p.machine] ?? p.machine}</div>
+                    <div className="title">{machinesById[p.machine]?.name ?? p.machine}</div>
                     <div className="muted">
                       区間 {seg.games}G / BB{seg.big} / RB{seg.reg}
                     </div>
@@ -885,10 +800,11 @@ export default function App() {
                 });
               }}
             >
-              <option value="MYJUG">マイジャグラーV</option>
-              <option value="IM">SアイムジャグラーEX</option>
-              <option value="GOGO">ゴーゴージャグラー</option>
-              <option value="FUNKY">ファンキージャグラー</option>
+              {machines.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name}
+                </option>
+              ))}
             </select>
           </div>
 
@@ -974,10 +890,12 @@ export default function App() {
 
           <div className="row">
             <label className="label">開始差枚(任意)</label>
-            <SignedIntInput
-              value={play.baseDiffTotal}
-              placeholder="0"
-              onChange={(v) => {
+            <input
+              className="input"
+              inputMode="numeric"
+              value={String(play.baseDiffTotal ?? 0)}
+              onChange={(e) => {
+                const v = parseSignedInt(e.target.value);
                 commit((draft) => {
                   const s = ensureSession(draft, view.dateKey);
                   const p = findPlay(s, play.id);
@@ -991,10 +909,12 @@ export default function App() {
 
           <div className="row">
             <label className="label">最終差枚(任意)</label>
-            <SignedIntInput
-              value={play.finalDiffTotal}
-              placeholder="0"
-              onChange={(v) => {
+            <input
+              className="input"
+              inputMode="numeric"
+              value={String(play.finalDiffTotal ?? 0)}
+              onChange={(e) => {
+                const v = parseSignedInt(e.target.value);
                 commit((draft) => {
                   const s = ensureSession(draft, view.dateKey);
                   const p = findPlay(s, play.id);

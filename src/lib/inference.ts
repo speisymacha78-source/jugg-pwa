@@ -1,5 +1,5 @@
 import type { MachineId, MachineOdds, MetricId } from "./model";
-import { ODDS } from "./model";
+import { machinesById } from "../machines";
 
 export type AdjustedStats = {
   // 区間（あなたのカウント区間）
@@ -153,7 +153,11 @@ function buildWeights(_machine: MachineId, odds: MachineOdds, segGames: number):
 }
 
 export function infer(machine: MachineId, stats: AdjustedStats): InferenceResult {
-  const odds = ODDS[machine];
+  const def = machinesById[machine];
+  if (!def) {
+    throw new Error(`Unknown machine id: ${machine}`);
+  }
+  const odds = def.odds as MachineOdds;
 
   const segGames = Math.max(0, Math.trunc(stats.segGames));
   const totalGames = Math.max(0, Math.trunc(stats.totalGames ?? 0));
