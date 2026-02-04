@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   MACHINE_LABEL,
   uid,
@@ -89,6 +89,91 @@ function sessionStats(play: Play) {
   const t = bonusTotals(play);
   return { games, big: t.bb, reg: t.rb };
 }
+
+/* =========================
+   Signed integer input (mobile-safe: no '-' key needed)
+   - Use +/- toggle + absolute value numeric input
+   - Empty => undefined
+   ========================= */
+type Sign = 1 | -1;
+
+function SignedIntInput(props: {
+  value?: number;
+  onChange: (v: number | undefined) => void;
+  placeholder?: string;
+  className?: string;
+}) {
+  const { value, onChange, placeholder, className } = props;
+  const [sign, setSign] = useState<Sign>(value != null && value < 0 ? -1 : 1);
+  const [absStr, setAbsStr] = useState<string>(
+    value == null ? "" : String(Math.abs(value))
+  );
+
+  useEffect(() => {
+    const nextSign: Sign = value != null && value < 0 ? -1 : 1;
+    const nextAbs = value == null ? "" : String(Math.abs(value));
+    setSign(nextSign);
+    setAbsStr(nextAbs);
+  }, [value]);
+
+  const commitValue = (nextSign: Sign, nextAbsStr: string) => {
+    const t = (nextAbsStr ?? "").trim();
+    if (!t) {
+      onChange(undefined);
+      return;
+    }
+    const n = Number.parseInt(t, 10);
+    if (!Number.isFinite(n)) {
+      onChange(undefined);
+      return;
+    }
+    onChange(nextSign * n);
+  };
+
+  return (
+    <div className="signedInt">
+      <div className="signedIntToggle">
+        <button
+          type="button"
+          className={"btn mini " + (sign === 1 ? "primary" : "")}
+          onClick={() => {
+            const ns: Sign = 1;
+            setSign(ns);
+            commitValue(ns, absStr);
+          }}
+        >
+          +
+        </button>
+        <button
+          type="button"
+          className={"btn mini " + (sign === -1 ? "primary" : "")}
+          onClick={() => {
+            const ns: Sign = -1;
+            setSign(ns);
+            commitValue(ns, absStr);
+          }}
+        >
+          −
+        </button>
+      </div>
+
+      <input
+        className={className ?? "input"}
+        inputMode="numeric"
+        pattern="\d*"
+        value={absStr}
+        placeholder={placeholder ?? "0"}
+        onChange={(e) => {
+          const v = e.target.value;
+          if (!/^\d*$/.test(v)) return;
+          setAbsStr(v);
+          commitValue(sign, v);
+        }}
+      />
+    </div>
+  );
+}
+
 
 /* =========================
    Counter Screen component (UPDATED)
@@ -340,37 +425,21 @@ function CounterScreen(props: {
               チェリー重複
             </button>
 
-            {/* 減算：単独/重複を明示（重複だけ-1したい要望に対応） */}
             <button
               className="btn modalBtn danger"
               onClick={() => {
+                // 減算（0未満にしない）— 呼び出し側で clamp
                 if (pick === "bb") {
                   if (bbSingle > 0) onBump({ bigSingle: -1 });
+                  else if (bbCherry > 0) onBump({ bigCherry: -1 });
                 } else {
                   if (rbSingle > 0) onBump({ regSingle: -1 });
+                  else if (rbCherry > 0) onBump({ regCherry: -1 });
                 }
                 setPick(null);
               }}
-              disabled={pick === "bb" ? bbSingle <= 0 : rbSingle <= 0}
-              title="単独のみ -1"
             >
-              単独 -1
-            </button>
-
-            <button
-              className="btn modalBtn danger"
-              onClick={() => {
-                if (pick === "bb") {
-                  if (bbCherry > 0) onBump({ bigCherry: -1 });
-                } else {
-                  if (rbCherry > 0) onBump({ regCherry: -1 });
-                }
-                setPick(null);
-              }}
-              disabled={pick === "bb" ? bbCherry <= 0 : rbCherry <= 0}
-              title="チェリー重複のみ -1"
-            >
-              重複 -1
+              -1
             </button>
           </div>
         </Modal>
@@ -905,12 +974,10 @@ export default function App() {
 
           <div className="row">
             <label className="label">開始差枚(任意)</label>
-            <input
-              className="input"
-              inputMode="numeric"
-              value={String(play.baseDiffTotal ?? 0)}
-              onChange={(e) => {
-                const v = parseSignedInt(e.target.value);
+            <SignedIntInput
+              value={play.baseDiffTotal}
+              placeholder="0"
+              onChange={(v) => {
                 commit((draft) => {
                   const s = ensureSession(draft, view.dateKey);
                   const p = findPlay(s, play.id);
@@ -924,12 +991,10 @@ export default function App() {
 
           <div className="row">
             <label className="label">最終差枚(任意)</label>
-            <input
-              className="input"
-              inputMode="numeric"
-              value={String(play.finalDiffTotal ?? 0)}
-              onChange={(e) => {
-                const v = parseSignedInt(e.target.value);
+            <SignedIntInput
+              value={play.finalDiffTotal}
+              placeholder="0"
+              onChange={(v) => {
                 commit((draft) => {
                   const s = ensureSession(draft, view.dateKey);
                   const p = findPlay(s, play.id);

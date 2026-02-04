@@ -197,13 +197,7 @@ html, body {
 }
 
 .cell.today {
-  border-color: rgba(255,255,255,0.65);
-  box-shadow: 0 0 0 2px rgba(255,255,255,0.18) inset;
-}
-
-.cell.selected {
-  border-color: rgba(120, 160, 255, 0.95);
-  box-shadow: 0 0 0 2px rgba(120, 160, 255, 0.22) inset;
+  border-color: rgba(255,255,255,0.45);
 }
 
 .cellDay {
@@ -525,4 +519,26 @@ html, body {
   .midValue {
     font-size: 17px;
   }
+}
+
+
+
+/* =========================
+   SignedIntInput (mobile-safe diff input)
+   ========================= */
+.btn.mini {
+  padding: 6px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+}
+
+.signedInt {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.signedIntToggle {
+  display: flex;
+  gap: 6px;
 }
