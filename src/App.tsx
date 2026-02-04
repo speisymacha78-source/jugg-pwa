@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import {
   MACHINE_LABEL,
   uid,
@@ -340,21 +340,37 @@ function CounterScreen(props: {
               チェリー重複
             </button>
 
+            {/* 減算：単独/重複を明示（重複だけ-1したい要望に対応） */}
             <button
               className="btn modalBtn danger"
               onClick={() => {
-                // 減算（0未満にしない）— 呼び出し側で clamp
                 if (pick === "bb") {
                   if (bbSingle > 0) onBump({ bigSingle: -1 });
-                  else if (bbCherry > 0) onBump({ bigCherry: -1 });
                 } else {
                   if (rbSingle > 0) onBump({ regSingle: -1 });
-                  else if (rbCherry > 0) onBump({ regCherry: -1 });
                 }
                 setPick(null);
               }}
+              disabled={pick === "bb" ? bbSingle <= 0 : rbSingle <= 0}
+              title="単独のみ -1"
             >
-              -1
+              単独 -1
+            </button>
+
+            <button
+              className="btn modalBtn danger"
+              onClick={() => {
+                if (pick === "bb") {
+                  if (bbCherry > 0) onBump({ bigCherry: -1 });
+                } else {
+                  if (rbCherry > 0) onBump({ regCherry: -1 });
+                }
+                setPick(null);
+              }}
+              disabled={pick === "bb" ? bbCherry <= 0 : rbCherry <= 0}
+              title="チェリー重複のみ -1"
+            >
+              重複 -1
             </button>
           </div>
         </Modal>
@@ -371,9 +387,8 @@ function JudgeScreen(props: {
   play: Play;
   onBackToCounter: () => void;
   onBackToPlay: () => void;
-  onSaveInference: (cache: NonNullable<Play["inferCache"]>) => void;
 }) {
-  const { play, onBackToCounter, onBackToPlay, onSaveInference } = props;
+  const { play, onBackToCounter, onBackToPlay } = props;
 
   const st = sessionStats(play);
   const diff =
@@ -399,34 +414,6 @@ function JudgeScreen(props: {
   };
 
   const info = st.games > 0 ? infer(play.machine, statsForInfer) : null;
-
-  // 「判別画面を見た時点の推定」を履歴に残す（簡素表示で使う）
-  useEffect(() => {
-    if (!info) return;
-    const posterior = info.posterior ?? [];
-    let bestIdx = 0;
-    for (let i = 1; i < posterior.length; i++) {
-      if ((posterior[i] ?? 0) > (posterior[bestIdx] ?? 0)) bestIdx = i;
-    }
-    const cache = {
-      mapSetting: bestIdx + 1,
-      expectedSetting: info.expectedSetting,
-      p4plus: info.p4plus,
-      p56: info.p56,
-      updatedAt: Date.now(),
-    };
-
-    const prev = play.inferCache;
-    const same =
-      prev &&
-      prev.mapSetting === cache.mapSetting &&
-      Math.abs(prev.expectedSetting - cache.expectedSetting) < 1e-6 &&
-      Math.abs(prev.p4plus - cache.p4plus) < 1e-6 &&
-      Math.abs(prev.p56 - cache.p56) < 1e-6;
-    if (!same) onSaveInference(cache);
-    // play は参照が頻繁に変わるので依存から外す
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [info]);
 
   return (
     <div className="wrap">
@@ -534,8 +521,6 @@ export default function App() {
   );
   const [view, setView] = useState<View>({ kind: "calendar" });
   const [month, setMonth] = useState(() => startOfMonth(new Date()));
-  // カレンダー上で選択した日（簡素表示用）
-  const [calendarPick, setCalendarPick] = useState<string | null>(null);
 
   const dateKey = useMemo(() => {
     if (view.kind === "day") return view.dateKey;
@@ -588,9 +573,6 @@ export default function App() {
     while (cells.length % 7 !== 0)
       cells.push({ dateKey: "", day: 0, inMonth: false });
 
-    const pickedKey = calendarPick;
-    const pickedSession = pickedKey ? state.sessions[pickedKey] : undefined;
-
     return (
       <div className="wrap">
         <Header
@@ -633,13 +615,8 @@ export default function App() {
                 key={idx}
                 className={`cell ${c.inMonth ? "" : "blank"} ${
                   c.dateKey === todayKey() ? "today" : ""
-                } ${
-                  pickedKey && c.dateKey === pickedKey ? "selected" : ""
                 }`}
-                onClick={() => {
-                  if (!c.dateKey) return;
-                  setCalendarPick(c.dateKey);
-                }}
+                onClick={() => c.dateKey && setView({ kind: "day", dateKey: c.dateKey })}
                 disabled={!c.inMonth}
               >
                 <div className="cellDay">{c.day || ""}</div>
@@ -650,62 +627,6 @@ export default function App() {
             ))}
           </div>
         </div>
-
-        {/* 選択日の簡素表示 */}
-        {pickedKey ? (
-          <div className="card">
-            <div className="row between">
-              <div>
-                <div className="title">{pickedKey}</div>
-                <div className="muted">
-                  {pickedSession?.plays?.length ? `${pickedSession.plays.length}台` : "稼働なし"}
-                </div>
-              </div>
-              <div className="row">
-                <button
-                  className="btn"
-                  onClick={() => setView({ kind: "day", dateKey: pickedKey })}
-                >
-                  開く
-                </button>
-                <button className="btn" onClick={() => setCalendarPick(null)}>
-                  ×
-                </button>
-              </div>
-            </div>
-
-            {pickedSession?.plays?.length ? (
-              <>
-                <hr className="hr" />
-                {pickedSession.plays
-                  .slice()
-                  .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
-                  .map((p) => {
-                    const seg = sessionStats(p);
-                    const cache = p.inferCache;
-                    return (
-                      <div key={p.id} className="row between" style={{ marginBottom: 8 }}>
-                        <div>
-                          <div className="title">{MACHINE_LABEL[p.machine] ?? p.machine}</div>
-                          <div className="muted">
-                            {seg.games}G / BB{seg.big} / RB{seg.reg}
-                          </div>
-                        </div>
-                        <div style={{ textAlign: "right" }}>
-                          <div className="title">
-                            推定{cache ? cache.mapSetting : "—"}
-                          </div>
-                          <div className="muted">
-                            {cache ? `E=${cache.expectedSetting.toFixed(2)} / P4+ ${(cache.p4plus * 100).toFixed(0)}%` : "判別未保存"}
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-              </>
-            ) : null}
-          </div>
-        ) : null}
 
         <div className="card">
           <div className="row between">
@@ -984,9 +905,12 @@ export default function App() {
 
           <div className="row">
             <label className="label">開始差枚(任意)</label>
-            <SignedIntInput
-              value={play.baseDiffTotal}
-              onCommit={(v) => {
+            <input
+              className="input"
+              inputMode="numeric"
+              value={String(play.baseDiffTotal ?? 0)}
+              onChange={(e) => {
+                const v = parseSignedInt(e.target.value);
                 commit((draft) => {
                   const s = ensureSession(draft, view.dateKey);
                   const p = findPlay(s, play.id);
@@ -1000,9 +924,12 @@ export default function App() {
 
           <div className="row">
             <label className="label">最終差枚(任意)</label>
-            <SignedIntInput
-              value={play.finalDiffTotal}
-              onCommit={(v) => {
+            <input
+              className="input"
+              inputMode="numeric"
+              value={String(play.finalDiffTotal ?? 0)}
+              onChange={(e) => {
+                const v = parseSignedInt(e.target.value);
                 commit((draft) => {
                   const s = ensureSession(draft, view.dateKey);
                   const p = findPlay(s, play.id);
@@ -1089,15 +1016,6 @@ export default function App() {
         onBackToPlay={() =>
           setView({ kind: "play", dateKey: view.dateKey, playId: play.id })
         }
-        onSaveInference={(cache) => {
-          commit((draft) => {
-            const s = ensureSession(draft, view.dateKey);
-            const p = findPlay(s, play.id);
-            if (!p) return;
-            p.inferCache = cache;
-            s.updatedAt = Date.now();
-          });
-        }}
       />
     );
   }
@@ -1152,65 +1070,6 @@ function NumBox(props: { label: string; value: number; onChange: (v: number) => 
         }}
       />
     </div>
-  );
-}
-
-function SignedIntInput(props: {
-  value?: number;
-  onCommit: (v?: number) => void;
-  inputMode?: React.HTMLAttributes<HTMLInputElement>["inputMode"];
-}) {
-  const [text, setText] = useState<string>(props.value == null ? "" : String(props.value));
-
-  useEffect(() => {
-    const next = props.value == null ? "" : String(props.value);
-    // ユーザーが入力中に勝手に戻すのを防ぐため、完全一致のときだけ同期
-    if (text === next) return;
-    // value 変更（別画面から復帰/インポート等）は反映
-    setText(next);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.value]);
-
-  return (
-    <input
-      className="input"
-      inputMode={props.inputMode ?? "numeric"}
-      value={text}
-      onChange={(e) => {
-        const t = e.target.value;
-        setText(t);
-
-        const s = (t ?? "").trim();
-        if (s === "") {
-          props.onCommit(undefined);
-          return;
-        }
-        if (s === "-") {
-          // 途中入力を許可（確定はしない）
-          return;
-        }
-        if (/^-?\d+$/.test(s)) {
-          props.onCommit(parseSignedInt(s));
-        }
-      }}
-      onBlur={() => {
-        const s = (text ?? "").trim();
-        if (s === "" || s === "-") {
-          setText("");
-          props.onCommit(undefined);
-          return;
-        }
-        if (/^-?\d+$/.test(s)) {
-          const v = parseSignedInt(s);
-          setText(String(v));
-          props.onCommit(v);
-        } else {
-          // 不正入力は元に戻す
-          const back = props.value == null ? "" : String(props.value);
-          setText(back);
-        }
-      }}
-    />
   );
 }
 
