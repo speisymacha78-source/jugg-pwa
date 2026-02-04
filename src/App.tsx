@@ -1,21 +1,26 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   MACHINE_LABEL,
   uid,
   todayKey,
-  keyFromDate,
   clampInt,
   parseSignedInt,
 } from "./lib/model";
-import type { AppState, DaySession, MachineId, Play, Checkpoint } from "./lib/model";
-
-import { loadState, saveState, downloadBackup, importBackupFile } from "./lib/storage";
+import type { AppState, DaySession, MachineId, Play } from "./lib/model";
+import {
+  loadState,
+  saveState,
+  downloadBackup,
+  importBackupFile,
+} from "./lib/storage";
 import { infer } from "./lib/inference";
 
 type View =
   | { kind: "calendar" }
   | { kind: "day"; dateKey: string }
-  | { kind: "play"; dateKey: string; playId: string };
+  | { kind: "play"; dateKey: string; playId: string }
+  | { kind: "counter"; dateKey: string; playId: string }
+  | { kind: "judge"; dateKey: string; playId: string };
 
 function startOfMonth(d: Date) {
   return new Date(d.getFullYear(), d.getMonth(), 1);
@@ -23,188 +28,914 @@ function startOfMonth(d: Date) {
 function addMonths(d: Date, delta: number) {
   return new Date(d.getFullYear(), d.getMonth() + delta, 1);
 }
-function daysInMonth(d: Date) {
-  return new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+
+function normalizeState(state: AppState | null): AppState {
+  const now = Date.now();
+  const next: AppState = state ?? { version: 1, sessions: {} };
+
+  next.version = 1;
+  next.sessions ??= {};
+
+  for (const k of Object.keys(next.sessions)) {
+    const s = next.sessions[k];
+    if (!s) continue;
+
+    s.dateKey ??= k;
+    s.plays ??= [];
+    s.updatedAt ??= now;
+
+    for (const p of s.plays) {
+      p.id ??= uid("play");
+      p.createdAt ??= now;
+
+      p.machine ??= "MYJUG";
+      p.baseGamesTotal ??= 0;
+      p.baseBigTotal ??= 0;
+      p.baseRegTotal ??= 0;
+      p.currentGamesTotal ??= p.baseGamesTotal;
+
+      p.bigSingleCount ??= 0;
+      p.bigCherryCount ??= 0;
+      p.regSingleCount ??= 0;
+      p.regCherryCount ??= 0;
+
+      p.grapesCount ??= 0;
+      p.cherriesCount ??= 0;
+
+      p.checkpoints ??= [];
+    }
+  }
+  return next;
 }
-function weekdaySun0(d: Date) {
-  return d.getDay(); // 0=Sun
+
+function keyFromDate(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${dd}`;
 }
 
-function ensureSession(state: AppState, dateKey: string): DaySession {
-  const existing = state.sessions[dateKey];
-  if (existing) return existing;
-  const s: DaySession = { dateKey, hall: "", note: "", plays: [], updatedAt: Date.now() };
-  state.sessions[dateKey] = s;
-  return s;
+function bonusTotals(play: Play) {
+  const bb = (play.bigSingleCount ?? 0) + (play.bigCherryCount ?? 0);
+  const rb = (play.regSingleCount ?? 0) + (play.regCherryCount ?? 0);
+  return { bb, rb };
 }
 
-function findPlay(session: DaySession, playId: string): Play | undefined {
-  return session.plays.find((p) => p.id === playId);
+function sessionStats(play: Play) {
+  const games = Math.max(
+    0,
+    (play.currentGamesTotal ?? 0) - (play.baseGamesTotal ?? 0)
+  );
+  const t = bonusTotals(play);
+  return { games, big: t.bb, reg: t.rb };
 }
 
-function latestCheckpoint(play: Play): Checkpoint | undefined {
-  if (!play.checkpoints.length) return undefined;
-  return [...play.checkpoints].sort((a, b) => a.ts - b.ts)[play.checkpoints.length - 1];
-}
+/* =========================
+   Counter Screen component (UPDATED)
+   ========================= */
+type BonusPick = "bb" | "rb";
 
-function adjustedStats(play: Play) {
-  const latest = latestCheckpoint(play);
-  if (!latest) return null;
+function CounterScreen(props: {
+  dateKey: string;
+  play: Play;
+  onBack: () => void;
+  onJudge: () => void;
+  onSetGamesTotal: (gamesTotal: number) => void;
+  onBump: (d: {
+    bigSingle?: number;
+    bigCherry?: number;
+    regSingle?: number;
+    regCherry?: number;
+    grape?: number;
+    cherry?: number;
+  }) => void;
+}) {
+  const { play, onBack, onJudge, onSetGamesTotal, onBump } = props;
 
-  const games = Math.max(0, latest.gamesTotal - play.baseGamesTotal);
-  const big = Math.max(0, latest.bigTotal - play.baseBigTotal);
-  const reg = Math.max(0, latest.regTotal - play.baseRegTotal);
+  // ===== 区間（自分が打ち始めてから） =====
+  const seg = sessionStats(play);
 
-  let diff: number | undefined = undefined;
-  if (play.baseDiffTotal != null && play.finalDiffTotal != null) {
-    diff = play.finalDiffTotal - play.baseDiffTotal;
+  const bbSingle = play.bigSingleCount ?? 0;
+  const bbCherry = play.bigCherryCount ?? 0;
+  const rbSingle = play.regSingleCount ?? 0;
+  const rbCherry = play.regCherryCount ?? 0;
+
+  const grapes = play.grapesCount ?? 0;
+  const cherries = play.cherriesCount ?? 0;
+
+  const bb = bbSingle + bbCherry;
+  const rb = rbSingle + rbCherry;
+
+  const odds = (n: number, g: number) =>
+    n > 0 ? `1/${(g / Math.max(1, n)).toFixed(1)}` : "—";
+
+  const segGames = seg.games;
+
+  const bbSingleOdds = segGames > 0 ? odds(bbSingle, segGames) : "—";
+  const bbCherryOdds = segGames > 0 ? odds(bbCherry, segGames) : "—";
+  const rbSingleOdds = segGames > 0 ? odds(rbSingle, segGames) : "—";
+  const rbCherryOdds = segGames > 0 ? odds(rbCherry, segGames) : "—";
+  const grapeOdds = segGames > 0 ? odds(grapes, segGames) : "—";
+  const cherryOdds = segGames > 0 ? odds(cherries, segGames) : "—";
+  const bonusOdds = segGames > 0 ? odds(bb + rb, segGames) : "—";
+
+  const [pick, setPick] = useState<BonusPick | null>(null);
+
+  // ★フラッシュ用（背景ではなく固定オーバーレイで確実に見せる）
+  const [flashColor, setFlashColor] = useState<string | null>(null);
+
+  function flashOverlay(color: string) {
+    // 連打でも確実に再発火
+    setFlashColor(null);
+    requestAnimationFrame(() => {
+      setFlashColor(color);
+      window.setTimeout(() => setFlashColor(null), 70);
+    });
   }
 
-  return { games, big, reg, diff };
+  function vibrate(ms: number) {
+    try {
+      // iOS Safari/PWAは効かないことが多い（効けばラッキー）
+      // @ts-ignore
+      if (navigator?.vibrate) navigator.vibrate(ms);
+    } catch {}
+  }
+
+  return (
+    <div className="wrap dark">
+      {/* ★フラッシュオーバーレイ */}
+      {flashColor && (
+        <div className="flashOverlay" style={{ backgroundColor: flashColor }} />
+      )}
+
+      <Header
+        title="カウンター"
+        left={
+          <button className="btn" onClick={onBack}>
+            戻る
+          </button>
+        }
+        right={
+          <button className="btn primary" onClick={onJudge}>
+            判別
+          </button>
+        }
+      />
+
+      <div className="card counterCard">
+        {/* 上段：2000G/12/11 */}
+        <div className="counterTop">
+          <div className="counterTopLine">
+            <span className="counterTopMono">
+              {segGames}G/{bb}/{rb}
+            </span>
+          </div>
+        </div>
+
+        {/* 中段：ぶどう/チェリー + 確率 */}
+        <div className="counterMid">
+          <div className="counterMidRow">
+            <div className="midItem">
+              <div className="midLabel grape">ブドウ</div>
+              <div className="midValue">{grapes}</div>
+              <div className="midOdds">{grapeOdds}</div>
+            </div>
+
+            <div className="midItem">
+              <div className="midLabel cherry">チェリー</div>
+              <div className="midValue">{cherries}</div>
+              <div className="midOdds">{cherryOdds}</div>
+            </div>
+
+            <div className="midItem">
+              <div className="midLabel white">合算</div>
+              <div className="midValue">{bb + rb}</div>
+              <div className="midOdds">{bonusOdds}</div>
+            </div>
+          </div>
+
+          <div className="counterMidRow smallRow">
+            <div className="smallItem">
+              <div className="smallKey pink">BB単独</div>
+              <div className="smallVal">
+                {bbSingle} ({bbSingleOdds})
+              </div>
+            </div>
+            <div className="smallItem">
+              <div className="smallKey pink">BB重複</div>
+              <div className="smallVal">
+                {bbCherry} ({bbCherryOdds})
+              </div>
+            </div>
+          </div>
+
+          <div className="counterMidRow smallRow">
+            <div className="smallItem">
+              <div className="smallKey yellow">RB単独</div>
+              <div className="smallVal">
+                {rbSingle} ({rbSingleOdds})
+              </div>
+            </div>
+            <div className="smallItem">
+              <div className="smallKey yellow">RB重複</div>
+              <div className="smallVal">
+                {rbCherry} ({rbCherryOdds})
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* 下段：ボタン群 */}
+        <div className="counterBtns">
+          {/* Gは手入力 */}
+          <div className="row" style={{ marginBottom: 8 }}>
+            <label className="label" style={{ minWidth: 72 }}>
+              G(累計)
+            </label>
+            <input
+              className="input"
+              inputMode="numeric"
+              value={String(play.currentGamesTotal ?? 0)}
+              onChange={(e) => {
+                const v = clampInt(parseSignedInt(e.target.value), 0, 9999999);
+                onSetGamesTotal(v);
+              }}
+            />
+          </div>
+
+          {/* BB / RB / ぶどう / チェリー */}
+          <div className="btnGrid">
+            <button className="btn bigBtn bb" onClick={() => setPick("bb")}>
+              BB
+            </button>
+            <button className="btn bigBtn rb" onClick={() => setPick("rb")}>
+              RB
+            </button>
+
+            <button
+              className="btn bigBtn grape"
+              onClick={() => {
+                onBump({ grape: 1 });
+                flashOverlay("#7CFF5B"); // ★黄緑
+                vibrate(12);
+              }}
+            >
+              ブドウ
+            </button>
+
+            <button
+              className="btn bigBtn cherry"
+              onClick={() => {
+                onBump({ cherry: 1 });
+                flashOverlay("#ff3b30"); // ★赤
+                vibrate(10);
+              }}
+            >
+              チェリー
+            </button>
+          </div>
+
+          {/* 手入力（ぶどう/チェリーも） */}
+          <div className="row" style={{ marginTop: 10 }}>
+            <label className="label">手入力</label>
+            <div className="inlineInputs">
+              <NumBox
+                label="ブドウ"
+                value={grapes}
+                onChange={(v) => onBump({ grape: v - grapes })}
+              />
+              <NumBox
+                label="チェリー"
+                value={cherries}
+                onChange={(v) => onBump({ cherry: v - cherries })}
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* BB/RB押下時：単独orチェリー重複を選ぶ */}
+      {pick && (
+        <Modal title={pick === "bb" ? "BB" : "RB"} onClose={() => setPick(null)}>
+          <div className="modalBtns">
+            <button
+              className="btn modalBtn"
+              onClick={() => {
+                if (pick === "bb") onBump({ bigSingle: 1 });
+                else onBump({ regSingle: 1 });
+                setPick(null);
+              }}
+            >
+              単独
+            </button>
+
+            <button
+              className="btn modalBtn"
+              onClick={() => {
+                if (pick === "bb") onBump({ bigCherry: 1 });
+                else onBump({ regCherry: 1 });
+                setPick(null);
+              }}
+            >
+              チェリー重複
+            </button>
+
+            <button
+              className="btn modalBtn danger"
+              onClick={() => {
+                // 減算（0未満にしない）— 呼び出し側で clamp
+                if (pick === "bb") {
+                  if (bbSingle > 0) onBump({ bigSingle: -1 });
+                  else if (bbCherry > 0) onBump({ bigCherry: -1 });
+                } else {
+                  if (rbSingle > 0) onBump({ regSingle: -1 });
+                  else if (rbCherry > 0) onBump({ regCherry: -1 });
+                }
+                setPick(null);
+              }}
+            >
+              -1
+            </button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
 }
 
-function formatPct(p: number) {
-  return `${(p * 100).toFixed(1)}%`;
+/* =========================
+   Judge Screen
+   ========================= */
+function JudgeScreen(props: {
+  dateKey: string;
+  play: Play;
+  onBackToCounter: () => void;
+  onBackToPlay: () => void;
+  onSaveInference: (cache: NonNullable<Play["inferCache"]>) => void;
+}) {
+  const { play, onBackToCounter, onBackToPlay, onSaveInference } = props;
+
+  const st = sessionStats(play);
+  const diff =
+    play.baseDiffTotal != null && play.finalDiffTotal != null
+      ? play.finalDiffTotal - play.baseDiffTotal
+      : undefined;
+
+  const totals = bonusTotals(play);
+
+  const statsForInfer = {
+    segGames: st.games,
+    bigSingle: play.bigSingleCount ?? 0,
+    bigCherry: play.bigCherryCount ?? 0,
+    regSingle: play.regSingleCount ?? 0,
+    regCherry: play.regCherryCount ?? 0,
+    grapes: play.grapesCount ?? 0,
+    nonOverlapCherries: play.cherriesCount ?? 0,
+    midCherryBig: play.midCherryBigCount ?? 0,
+    totalGames: play.currentGamesTotal ?? 0,
+    totalBig: (play.baseBigTotal ?? 0) + totals.bb,
+    totalReg: (play.baseRegTotal ?? 0) + totals.rb,
+    diff,
+  };
+
+  const info = st.games > 0 ? infer(play.machine, statsForInfer) : null;
+
+  // 「判別画面を見た時点の推定」を履歴に残す（簡素表示で使う）
+  useEffect(() => {
+    if (!info) return;
+    const posterior = info.posterior ?? [];
+    let bestIdx = 0;
+    for (let i = 1; i < posterior.length; i++) {
+      if ((posterior[i] ?? 0) > (posterior[bestIdx] ?? 0)) bestIdx = i;
+    }
+    const cache = {
+      mapSetting: bestIdx + 1,
+      expectedSetting: info.expectedSetting,
+      p4plus: info.p4plus,
+      p56: info.p56,
+      updatedAt: Date.now(),
+    };
+
+    const prev = play.inferCache;
+    const same =
+      prev &&
+      prev.mapSetting === cache.mapSetting &&
+      Math.abs(prev.expectedSetting - cache.expectedSetting) < 1e-6 &&
+      Math.abs(prev.p4plus - cache.p4plus) < 1e-6 &&
+      Math.abs(prev.p56 - cache.p56) < 1e-6;
+    if (!same) onSaveInference(cache);
+    // play は参照が頻繁に変わるので依存から外す
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [info]);
+
+  return (
+    <div className="wrap">
+      <Header
+        title="設定推測"
+        left={
+          <button className="btn" onClick={onBackToCounter}>
+            カウンターへ
+          </button>
+        }
+        right={
+          <button className="btn" onClick={onBackToPlay}>
+            台詳細へ
+          </button>
+        }
+      />
+
+      <div className="card">
+        <div className="kv">
+          <div className="kvRow">
+            <div className="kvKey">区間</div>
+            <div className="kvVal">
+              {st.games}G / BB{st.big} / RB{st.reg}
+            </div>
+          </div>
+
+          <hr className="hr" />
+
+          <div className="kvRow">
+            <div className="kvKey">期待設定</div>
+            <div className="kvVal big">
+              {info ? info.expectedSetting.toFixed(2) : "—"}
+            </div>
+          </div>
+
+          <div className="kvRow">
+            <div className="kvKey">P(設定4以上)</div>
+            <div className="kvVal">
+              {info ? `${(info.p4plus * 100).toFixed(1)}%` : "—"}
+            </div>
+          </div>
+
+          <div className="kvRow">
+            <div className="kvKey">P(設定5/6)</div>
+            <div className="kvVal">
+              {info ? `${(info.p56 * 100).toFixed(1)}%` : "—"}
+            </div>
+          </div>
+
+          {info?.grapeOddsFromDiff && (
+            <>
+              <hr className="hr" />
+              <div className="kvRow">
+                <div className="kvKey">差枚逆算ぶどう</div>
+                <div className="kvVal">
+                  1/{info.grapeOddsFromDiff.toFixed(2)}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
+      {info && (
+        <div className="card">
+          <div className="titleRow">
+            <div className="title">事後確率</div>
+          </div>
+          <div className="bars">
+            {info.posterior.map((p, idx) => (
+              <div className="barRow" key={idx}>
+                <div className="barLabel">設定{idx + 1}</div>
+                <div className="barTrack">
+                  <div className="barFill" style={{ width: `${p * 100}%` }} />
+                </div>
+                <div className="barVal">{(p * 100).toFixed(1)}%</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {info && (
+        <div className="card">
+          <div className="titleRow">
+            <div className="title">重み（参考）</div>
+          </div>
+          <div className="mono" style={{ fontSize: 12, opacity: 0.85 }}>
+            {Object.entries(info.weightsUsed)
+              .map(([k, v]) => `${k}:${v}`)
+              .join(" / ")}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
-function App() {
-  const [state, setState] = useState<AppState>(() => loadState());
+/* =========================
+   Main App
+   ========================= */
+export default function App() {
+  const [state, setState] = useState<AppState>(() =>
+    normalizeState(loadState())
+  );
   const [view, setView] = useState<View>({ kind: "calendar" });
+  const [month, setMonth] = useState(() => startOfMonth(new Date()));
+  // カレンダー上で選択した日（簡素表示用）
+  const [calendarPick, setCalendarPick] = useState<string | null>(null);
 
-  const [monthAnchor, setMonthAnchor] = useState<Date>(() => startOfMonth(new Date()));
+  const dateKey = useMemo(() => {
+    if (view.kind === "day") return view.dateKey;
+    if (view.kind === "play") return view.dateKey;
+    if (view.kind === "counter") return view.dateKey;
+    if (view.kind === "judge") return view.dateKey;
+    return todayKey();
+  }, [view]);
+
+  const session = useMemo(
+    () => ensureSession(state, dateKey),
+    [state, dateKey]
+  );
+  const play = useMemo(() => {
+    if (
+      view.kind === "play" ||
+      view.kind === "counter" ||
+      view.kind === "judge"
+    ) {
+      return findPlay(session, view.playId);
+    }
+    return null;
+  }, [session, view]);
 
   function commit(mutator: (draft: AppState) => void) {
     setState((prev) => {
-      const next: AppState = structuredClone(prev);
+      const next = structuredClone(prev);
       mutator(next);
       saveState(next);
       return next;
     });
   }
 
-  const sessions = state.sessions;
+  // ====== Calendar view ======
+  if (view.kind === "calendar") {
+    const first = startOfMonth(month);
+    const startDow = first.getDay(); // 0=Sun
+    const cells: { dateKey: string; day: number; inMonth: boolean }[] = [];
 
-  const monthGrid = useMemo(() => {
-    const first = startOfMonth(monthAnchor);
-    const dim = daysInMonth(first);
-    const lead = weekdaySun0(first); // 0..6
-    const cells: Array<{ dateKey: string; day: number; inMonth: boolean }> = [];
-
-    // leading blanks
-    for (let i = 0; i < lead; i++) {
+    // prev month blanks
+    for (let i = 0; i < startDow; i++)
       cells.push({ dateKey: "", day: 0, inMonth: false });
-    }
-    for (let day = 1; day <= dim; day++) {
+
+    // days
+    const last = new Date(first.getFullYear(), first.getMonth() + 1, 0);
+    for (let day = 1; day <= last.getDate(); day++) {
       const d = new Date(first.getFullYear(), first.getMonth(), day);
       cells.push({ dateKey: keyFromDate(d), day, inMonth: true });
     }
-    // trailing to full weeks
-    while (cells.length % 7 !== 0) cells.push({ dateKey: "", day: 0, inMonth: false });
-    return cells;
-  }, [monthAnchor]);
+    while (cells.length % 7 !== 0)
+      cells.push({ dateKey: "", day: 0, inMonth: false });
 
-  // ---- View render ----
-
-  if (view.kind === "calendar") {
-    const y = monthAnchor.getFullYear();
-    const m = monthAnchor.getMonth() + 1;
+    const pickedKey = calendarPick;
+    const pickedSession = pickedKey ? state.sessions[pickedKey] : undefined;
 
     return (
       <div className="wrap">
         <Header
-          title={`稼働カレンダー ${y}-${String(m).padStart(2, "0")}`}
+          title="稼働カレンダー"
+          left={
+            <button className="btn" onClick={() => setMonth(addMonths(month, -1))}>
+              前月
+            </button>
+          }
           right={
-            <div style={{ display: "flex", gap: 8 }}>
-              <button className="btn" onClick={() => setMonthAnchor(addMonths(monthAnchor, -1))}>前月</button>
-              <button className="btn" onClick={() => setMonthAnchor(addMonths(monthAnchor, 1))}>次月</button>
-              <button className="btn" onClick={() => setMonthAnchor(startOfMonth(new Date()))}>今月</button>
+            <button className="btn" onClick={() => setMonth(addMonths(month, 1))}>
+              次月
+            </button>
+          }
+        />
+
+        <div className="card">
+          <div className="row between">
+            <div className="title">
+              {first.getFullYear()}年{first.getMonth() + 1}月
+            </div>
+            <div className="row">
+              <button
+                className="btn"
+                onClick={() => setView({ kind: "day", dateKey: todayKey() })}
+              >
+                今日
+              </button>
+            </div>
+          </div>
+
+          <div className="grid7">
+            {["日", "月", "火", "水", "木", "金", "土"].map((w) => (
+              <div key={w} className="dow">
+                {w}
+              </div>
+            ))}
+            {cells.map((c, idx) => (
+              <button
+                key={idx}
+                className={`cell ${c.inMonth ? "" : "blank"} ${
+                  c.dateKey === todayKey() ? "today" : ""
+                } ${
+                  pickedKey && c.dateKey === pickedKey ? "selected" : ""
+                }`}
+                onClick={() => {
+                  if (!c.dateKey) return;
+                  setCalendarPick(c.dateKey);
+                }}
+                disabled={!c.inMonth}
+              >
+                <div className="cellDay">{c.day || ""}</div>
+                {c.dateKey && state.sessions[c.dateKey]?.plays?.length ? (
+                  <div className="cellDot">{state.sessions[c.dateKey].plays.length}</div>
+                ) : null}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* 選択日の簡素表示 */}
+        {pickedKey ? (
+          <div className="card">
+            <div className="row between">
+              <div>
+                <div className="title">{pickedKey}</div>
+                <div className="muted">
+                  {pickedSession?.plays?.length ? `${pickedSession.plays.length}台` : "稼働なし"}
+                </div>
+              </div>
+              <div className="row">
+                <button
+                  className="btn"
+                  onClick={() => setView({ kind: "day", dateKey: pickedKey })}
+                >
+                  開く
+                </button>
+                <button className="btn" onClick={() => setCalendarPick(null)}>
+                  ×
+                </button>
+              </div>
+            </div>
+
+            {pickedSession?.plays?.length ? (
+              <>
+                <hr className="hr" />
+                {pickedSession.plays
+                  .slice()
+                  .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
+                  .map((p) => {
+                    const seg = sessionStats(p);
+                    const cache = p.inferCache;
+                    return (
+                      <div key={p.id} className="row between" style={{ marginBottom: 8 }}>
+                        <div>
+                          <div className="title">{MACHINE_LABEL[p.machine] ?? p.machine}</div>
+                          <div className="muted">
+                            {seg.games}G / BB{seg.big} / RB{seg.reg}
+                          </div>
+                        </div>
+                        <div style={{ textAlign: "right" }}>
+                          <div className="title">
+                            推定{cache ? cache.mapSetting : "—"}
+                          </div>
+                          <div className="muted">
+                            {cache ? `E=${cache.expectedSetting.toFixed(2)} / P4+ ${(cache.p4plus * 100).toFixed(0)}%` : "判別未保存"}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+              </>
+            ) : null}
+          </div>
+        ) : null}
+
+        <div className="card">
+          <div className="row between">
+            <div className="title">バックアップ</div>
+          </div>
+          <div className="row">
+            <button className="btn" onClick={() => downloadBackup(state)}>
+              ダウンロード
+            </button>
+            <label className="btn">
+              インポート
+              <input
+                type="file"
+                accept="application/json"
+                style={{ display: "none" }}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (!f) return;
+                  importBackupFile(f).then((st) => {
+                    if (!st) return;
+                    const next = normalizeState(st);
+                    setState(next);
+                    saveState(next);
+                    alert("インポートしました");
+                  });
+                }}
+              />
+            </label>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ====== Day view ======
+  if (view.kind === "day") {
+    const s = ensureSession(state, view.dateKey);
+    return (
+      <div className="wrap">
+        <Header
+          title={`${view.dateKey}`}
+          left={
+            <button className="btn" onClick={() => setView({ kind: "calendar" })}>
+              カレンダー
+            </button>
+          }
+          right={
+            <button
+              className="btn primary"
+              onClick={() => {
+                const newPlay: Play = {
+                  id: uid("play"),
+                  machine: "MYJUG",
+                  baseGamesTotal: 0,
+                  baseBigTotal: 0,
+                  baseRegTotal: 0,
+                  currentGamesTotal: 0,
+
+                  bigSingleCount: 0,
+                  bigCherryCount: 0,
+                  regSingleCount: 0,
+                  regCherryCount: 0,
+
+                  grapesCount: 0,
+                  cherriesCount: 0,
+
+                  checkpoints: [],
+                  createdAt: Date.now(),
+                };
+
+                commit((draft) => {
+                  const ss = ensureSession(draft, view.dateKey);
+                  ss.plays.push(newPlay);
+                  ss.updatedAt = Date.now();
+                });
+
+                setView({ kind: "play", dateKey: view.dateKey, playId: newPlay.id });
+              }}
+            >
+              + 台追加
+            </button>
+          }
+        />
+
+        {s.plays.length === 0 ? (
+          <div className="card">
+            <div className="muted">この日はまだ台がありません。</div>
+          </div>
+        ) : (
+          s.plays.map((p) => {
+            const seg = sessionStats(p);
+            return (
+              <div className="card" key={p.id}>
+                <div className="row between">
+                  <div>
+                    <div className="title">{MACHINE_LABEL[p.machine] ?? p.machine}</div>
+                    <div className="muted">
+                      区間 {seg.games}G / BB{seg.big} / RB{seg.reg}
+                    </div>
+                  </div>
+                  <div className="row">
+                    <button
+                      className="btn"
+                      onClick={() => setView({ kind: "counter", dateKey: view.dateKey, playId: p.id })}
+                    >
+                      カウンター
+                    </button>
+                    <button
+                      className="btn"
+                      onClick={() => setView({ kind: "judge", dateKey: view.dateKey, playId: p.id })}
+                    >
+                      判別
+                    </button>
+                    <button
+                      className="btn"
+                      onClick={() => setView({ kind: "play", dateKey: view.dateKey, playId: p.id })}
+                    >
+                      詳細
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+    );
+  }
+
+  // ====== Play details ======
+  if (view.kind === "play" && play) {
+    return (
+      <div className="wrap">
+        <Header
+          title="台詳細"
+          left={
+            <button className="btn" onClick={() => setView({ kind: "day", dateKey: view.dateKey })}>
+              戻る
+            </button>
+          }
+          right={
+            <div className="row">
+              <button
+                className="btn"
+                onClick={() => setView({ kind: "counter", dateKey: view.dateKey, playId: play.id })}
+              >
+                カウンター
+              </button>
+              <button
+                className="btn"
+                onClick={() => setView({ kind: "judge", dateKey: view.dateKey, playId: play.id })}
+              >
+                判別
+              </button>
+              <button
+                className="btn danger"
+                onClick={() => {
+                  if (!confirm("この台を削除しますか？")) return;
+                  commit((draft) => {
+                    const s = ensureSession(draft, view.dateKey);
+                    s.plays = s.plays.filter((x) => x.id !== play.id);
+                    s.updatedAt = Date.now();
+                  });
+                  setView({ kind: "day", dateKey: view.dateKey });
+                }}
+              >
+                削除
+              </button>
             </div>
           }
         />
 
         <div className="card">
-          <div className="dow">
-            {["日", "月", "火", "水", "木", "金", "土"].map((w) => (
-              <div key={w} className="dowCell">{w}</div>
-            ))}
-          </div>
-
-          <div className="grid">
-            {monthGrid.map((c, idx) => {
-              if (!c.inMonth) return <div key={idx} className="cell empty" />;
-              const has = sessions[c.dateKey]?.plays?.length > 0;
-              return (
-                <button
-                  key={c.dateKey}
-                  className={`cell ${has ? "has" : ""}`}
-                  onClick={() => setView({ kind: "day", dateKey: c.dateKey })}
-                >
-                  <div className="dayNum">{c.day}</div>
-                  {has && <div className="dot" />}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        <Footer
-          onBackup={() => downloadBackup(state)}
-          onImport={(file) => {
-            importBackupFile(file)
-              .then((st) => {
-                setState(st);
-                saveState(st);
-                setView({ kind: "calendar" });
-              })
-              .catch((e) => alert(String(e?.message ?? e)));
-          }}
-          onGoToday={() => setView({ kind: "day", dateKey: todayKey() })}
-        />
-      </div>
-    );
-  }
-
-  if (view.kind === "day") {
-    const dateKey = view.dateKey;
-    const session = sessions[dateKey] ?? { dateKey, hall: "", note: "", plays: [], updatedAt: 0 };
-    
-    return (
-      <div className="wrap">
-        <Header
-          title={`日付 ${dateKey}`}
-          left={<button className="btn" onClick={() => setView({ kind: "calendar" })}>戻る</button>}
-          right={<button className="btn primary" onClick={() => {
-            commit((draft) => {
-              const s = ensureSession(draft, dateKey);
-              const p: Play = {
-                id: uid("play"),
-                machine: "MYJUG",
-                table: "",
-                baseGamesTotal: 0,
-                baseBigTotal: 0,
-                baseRegTotal: 0,
-                baseDiffTotal: undefined,
-                finalDiffTotal: undefined,
-                checkpoints: [],
-                createdAt: Date.now(),
-              };
-              s.plays.push(p);
-              s.updatedAt = Date.now();
-            });
-          }}>台を追加</button>}
-        />
-
-        <div className="card">
           <div className="row">
-            <label className="label">ホール（任意）</label>
+            <label className="label">機種</label>
+            <select
+              className="input"
+              value={play.machine}
+              onChange={(e) => {
+                const v = e.target.value as MachineId;
+                commit((draft) => {
+                  const s = ensureSession(draft, view.dateKey);
+                  const p = findPlay(s, play.id);
+                  if (!p) return;
+                  p.machine = v;
+                  s.updatedAt = Date.now();
+                });
+              }}
+            >
+              <option value="MYJUG">マイジャグラーV</option>
+              <option value="IM">SアイムジャグラーEX</option>
+              <option value="GOGO">ゴーゴージャグラー</option>
+              <option value="FUNKY">ファンキージャグラー</option>
+            </select>
+          </div>
+
+          <div className="row">
+            <label className="label">台番（任意）</label>
             <input
               className="input"
-              value={session.hall ?? ""}
+              value={play.table ?? ""}
               onChange={(e) => {
                 const v = e.target.value;
                 commit((draft) => {
-                  const s = ensureSession(draft, dateKey);
-                  s.hall = v;
+                  const s = ensureSession(draft, view.dateKey);
+                  const p = findPlay(s, play.id);
+                  if (!p) return;
+                  p.table = v;
+                  s.updatedAt = Date.now();
+                });
+              }}
+            />
+          </div>
+
+          <hr className="hr" />
+
+          <div className="row">
+            <label className="label">開始G(累計)</label>
+            <input
+              className="input"
+              inputMode="numeric"
+              value={String(play.baseGamesTotal ?? 0)}
+              onChange={(e) => {
+                const v = clampInt(parseSignedInt(e.target.value), 0, 9999999);
+                commit((draft) => {
+                  const s = ensureSession(draft, view.dateKey);
+                  const p = findPlay(s, play.id);
+                  if (!p) return;
+                  p.baseGamesTotal = v;
+                  if ((p.currentGamesTotal ?? 0) < v) p.currentGamesTotal = v;
                   s.updatedAt = Date.now();
                 });
               }}
@@ -212,15 +943,71 @@ function App() {
           </div>
 
           <div className="row">
-            <label className="label">メモ（任意）</label>
+            <label className="label">開始BB(累計)</label>
             <input
               className="input"
-              value={session.note ?? ""}
+              inputMode="numeric"
+              value={String(play.baseBigTotal ?? 0)}
               onChange={(e) => {
-                const v = e.target.value;
+                const v = clampInt(parseSignedInt(e.target.value), 0, 999999);
                 commit((draft) => {
-                  const s = ensureSession(draft, dateKey);
-                  s.note = v;
+                  const s = ensureSession(draft, view.dateKey);
+                  const p = findPlay(s, play.id);
+                  if (!p) return;
+                  p.baseBigTotal = v;
+                  s.updatedAt = Date.now();
+                });
+              }}
+            />
+          </div>
+
+          <div className="row">
+            <label className="label">開始RB(累計)</label>
+            <input
+              className="input"
+              inputMode="numeric"
+              value={String(play.baseRegTotal ?? 0)}
+              onChange={(e) => {
+                const v = clampInt(parseSignedInt(e.target.value), 0, 999999);
+                commit((draft) => {
+                  const s = ensureSession(draft, view.dateKey);
+                  const p = findPlay(s, play.id);
+                  if (!p) return;
+                  p.baseRegTotal = v;
+                  s.updatedAt = Date.now();
+                });
+              }}
+            />
+          </div>
+
+          <hr className="hr" />
+
+          <div className="row">
+            <label className="label">開始差枚(任意)</label>
+            <SignedIntInput
+              value={play.baseDiffTotal}
+              onCommit={(v) => {
+                commit((draft) => {
+                  const s = ensureSession(draft, view.dateKey);
+                  const p = findPlay(s, play.id);
+                  if (!p) return;
+                  p.baseDiffTotal = v;
+                  s.updatedAt = Date.now();
+                });
+              }}
+            />
+          </div>
+
+          <div className="row">
+            <label className="label">最終差枚(任意)</label>
+            <SignedIntInput
+              value={play.finalDiffTotal}
+              onCommit={(v) => {
+                commit((draft) => {
+                  const s = ensureSession(draft, view.dateKey);
+                  const p = findPlay(s, play.id);
+                  if (!p) return;
+                  p.finalDiffTotal = v;
                   s.updatedAt = Date.now();
                 });
               }}
@@ -229,441 +1016,219 @@ function App() {
         </div>
 
         <div className="card">
-          <h3 className="h3">台一覧</h3>
-          {session.plays.length === 0 ? (
-            <div className="muted">まだ台がありません。「台を追加」を押してください。</div>
-          ) : (
-            <div className="list">
-              {session.plays.map((p) => {
-                const adj = adjustedStats(p);
-                const info = adj ? infer(p.machine, adj) : null;
-
-                return (
-                  <button
-                    key={p.id}
-                    className="listItem"
-                    onClick={() => setView({ kind: "play", dateKey, playId: p.id })}
-                  >
-                    <div className="liMain">
-                      <div className="liTitle">
-                        {MACHINE_LABEL[p.machine]}
-                        {p.table ? ` / 台番 ${p.table}` : ""}
-                      </div>
-                      <div className="liSub">
-                        {adj ? (
-                          <>
-                            {adj.games}G BB{adj.big} RB{adj.reg}
-                            {" / 期待設定 "}
-                            {info ? info.expectedSetting.toFixed(2) : "—"}
-                          </>
-                        ) : (
-                          "チェックポイント未入力"
-                        )}
-                      </div>
-                    </div>
-                    <div className="liRight">→</div>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        <div className="card">
-          <div className="muted">
-            iPhoneで使うとき：同じWi-Fiに接続して、このPCのアドレスにアクセスします（手順は後述）。
+          <div className="row between">
+            <div className="title">メモ</div>
           </div>
-        </div>
-      </div>
-    );
-  }
-
-  // play view
-  const dateKey = view.dateKey;
-  const session = sessions[dateKey];
-  if (!session) {
-    return (
-      <div className="wrap">
-        <Header title="エラー" left={<button className="btn" onClick={() => setView({ kind: "calendar" })}>戻る</button>} />
-        <div className="card">この日付のデータがありません。</div>
-      </div>
-    );
-  }
-
-  const play = findPlay(session, view.playId);
-  if (!play) {
-    return (
-      <div className="wrap">
-        <Header title="エラー" left={<button className="btn" onClick={() => setView({ kind: "day", dateKey })}>戻る</button>} />
-        <div className="card">この台が見つかりません。</div>
-      </div>
-    );
-  }
-
-  const adj = adjustedStats(play);
-  const info = adj ? infer(play.machine, adj) : null;
-  const latest = latestCheckpoint(play);
-
-  return (
-    <div className="wrap">
-      <Header
-        title="台詳細"
-        left={<button className="btn" onClick={() => setView({ kind: "day", dateKey })}>戻る</button>}
-        right={
-          <div style={{ display: "flex", gap: 8 }}>
-            <button className="btn" onClick={() => {
-              if (!confirm("この台を削除しますか？")) return;
-              commit((draft) => {
-                const s = ensureSession(draft, dateKey);
-                s.plays = s.plays.filter((x) => x.id !== play.id);
-                s.updatedAt = Date.now();
-              });
-              setView({ kind: "day", dateKey });
-            }}>削除</button>
-          </div>
-        }
-      />
-
-      <div className="card">
-        <div className="row">
-          <label className="label">機種</label>
-          <select
-            className="input"
-            value={play.machine}
-            onChange={(e) => {
-              const v = e.target.value as MachineId;
-              commit((draft) => {
-                const s = ensureSession(draft, dateKey);
-                const p = findPlay(s, play.id);
-                if (!p) return;
-                p.machine = v;
-                s.updatedAt = Date.now();
-              });
-            }}
-          >
-            <option value="MYJUG">マイジャグラーV</option>
-            <option value="IM">SアイムジャグラーEX</option>
-          </select>
-        </div>
-
-        <div className="row">
-          <label className="label">台番（任意）</label>
-          <input
-            className="input"
-            value={play.table ?? ""}
+          <textarea
+            className="textarea"
+            value={session.note ?? ""}
             onChange={(e) => {
               const v = e.target.value;
               commit((draft) => {
-                const s = ensureSession(draft, dateKey);
-                const p = findPlay(s, play.id);
-                if (!p) return;
-                p.table = v;
+                const s = ensureSession(draft, view.dateKey);
+                s.note = v;
                 s.updatedAt = Date.now();
               });
             }}
           />
         </div>
       </div>
+    );
+  }
 
-      <div className="card">
-        <h3 className="h3">前任者データ（開始時点の累計）</h3>
-        <BaseEditor
-          play={play}
-          onSave={(next) => {
-            commit((draft) => {
-              const s = ensureSession(draft, dateKey);
-              const p = findPlay(s, play.id);
-              if (!p) return;
-              Object.assign(p, next);
-              s.updatedAt = Date.now();
-            });
-          }}
-        />
-      </div>
-
-      <div className="card">
-        <h3 className="h3">途中経過（G/BB/RB）</h3>
-        <CheckpointEditor
-          play={play}
-          onAdd={(cp) => {
-            commit((draft) => {
-              const s = ensureSession(draft, dateKey);
-              const p = findPlay(s, play.id);
-              if (!p) return;
-              p.checkpoints.push(cp);
-              s.updatedAt = Date.now();
-            });
-          }}
-        />
-
-        <div className="list" style={{ marginTop: 10 }}>
-          {play.checkpoints
-            .slice()
-            .sort((a, b) => a.ts - b.ts)
-            .map((cp) => (
-              <div key={cp.id} className="listItem static">
-                <div className="liMain">
-                  <div className="liTitle">{new Date(cp.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</div>
-                  <div className="liSub">{cp.gamesTotal}G BB{cp.bigTotal} RB{cp.regTotal}</div>
-                </div>
-              </div>
-            ))}
-          {play.checkpoints.length === 0 && <div className="muted">まだ入力がありません。</div>}
-        </div>
-      </div>
-
-      <div className="card">
-        <h3 className="h3">最終差枚（累計）</h3>
-        <FinalDiffEditor
-          play={play}
-          onSave={(finalDiffTotal) => {
-            commit((draft) => {
-              const s = ensureSession(draft, dateKey);
-              const p = findPlay(s, play.id);
-              if (!p) return;
-              p.finalDiffTotal = finalDiffTotal;
-              s.updatedAt = Date.now();
-            });
-          }}
-        />
-      </div>
-
-      <div className="card">
-        <h3 className="h3">結果（あなたの区間）</h3>
-
-        {latest ? (
-          <div className="kv">
-            <div className="kvRow">
-              <div className="kvKey">最新（累計）</div>
-              <div className="kvVal">{latest.gamesTotal}G BB{latest.bigTotal} RB{latest.regTotal}</div>
-            </div>
-            <div className="kvRow">
-              <div className="kvKey">区間（現在−前任者）</div>
-              <div className="kvVal">
-                {adj ? `${adj.games}G BB${adj.big} RB${adj.reg}` : "—"}
-              </div>
-            </div>
-
-            <hr className="hr" />
-
-            <div className="kvRow">
-              <div className="kvKey">期待設定</div>
-              <div className="kvVal big">{info ? info.expectedSetting.toFixed(2) : "—"}</div>
-            </div>
-            <div className="kvRow">
-              <div className="kvKey">P(設定4以上)</div>
-              <div className="kvVal">{info ? formatPct(info.p4plus) : "—"}</div>
-            </div>
-            <div className="kvRow">
-              <div className="kvKey">P(設定5/6)</div>
-              <div className="kvVal">{info ? formatPct(info.p56) : "—"}</div>
-            </div>
-
-            <hr className="hr" />
-
-            <div className="kvRow">
-              <div className="kvKey">ブドウ逆算（差枚）</div>
-              <div className="kvVal">
-                {info?.grapeOddsFromDiff
-                  ? `1/${info.grapeOddsFromDiff.toFixed(2)}`
-                  : "前任者差枚 と 最終差枚 が揃うと計算できます（または推定不能）"}
-              </div>
-            </div>
-            {info?.grapeCoinsFromDiff != null && (
-              <div className="kvRow">
-                <div className="kvKey">ぶどう獲得枚数(逆算)</div>
-                <div className="kvVal">{info.grapeCoinsFromDiff.toFixed(2)}</div>
-              </div>
-            )}
-          </div>
-        ) : (
-          <div className="muted">まず途中経過を1回入力してください。</div>
-        )}
-      </div>
-
-      <Footer
-        onBackup={() => downloadBackup(state)}
-        onImport={(file) => {
-          importBackupFile(file)
-            .then((st) => {
-              setState(st);
-              saveState(st);
-              setView({ kind: "calendar" });
-            })
-            .catch((e) => alert(String(e?.message ?? e)));
+  // ====== Counter ======
+  if (view.kind === "counter" && play) {
+    return (
+      <CounterScreen
+        dateKey={view.dateKey}
+        play={play}
+        onBack={() => setView({ kind: "day", dateKey: view.dateKey })}
+        onJudge={() =>
+          setView({ kind: "judge", dateKey: view.dateKey, playId: play.id })
+        }
+        onSetGamesTotal={(gamesTotal) => {
+          commit((draft) => {
+            const s = ensureSession(draft, view.dateKey);
+            const p = findPlay(s, play.id);
+            if (!p) return;
+            p.currentGamesTotal = gamesTotal;
+            s.updatedAt = Date.now();
+          });
         }}
-        onGoToday={() => setView({ kind: "day", dateKey: todayKey() })}
+        onBump={(d) => {
+          commit((draft) => {
+            const s = ensureSession(draft, view.dateKey);
+            const p = findPlay(s, play.id);
+            if (!p) return;
+
+            const dec = (x: number, delta: number) => Math.max(0, (x ?? 0) + delta);
+
+            if (d.bigSingle) p.bigSingleCount = dec(p.bigSingleCount ?? 0, d.bigSingle);
+            if (d.bigCherry) p.bigCherryCount = dec(p.bigCherryCount ?? 0, d.bigCherry);
+            if (d.regSingle) p.regSingleCount = dec(p.regSingleCount ?? 0, d.regSingle);
+            if (d.regCherry) p.regCherryCount = dec(p.regCherryCount ?? 0, d.regCherry);
+            if (d.grape) p.grapesCount = dec(p.grapesCount ?? 0, d.grape);
+            if (d.cherry) p.cherriesCount = dec(p.cherriesCount ?? 0, d.cherry);
+
+            s.updatedAt = Date.now();
+          });
+        }}
+      />
+    );
+  }
+
+  // ====== Judge ======
+  if (view.kind === "judge" && play) {
+    return (
+      <JudgeScreen
+        dateKey={view.dateKey}
+        play={play}
+        onBackToCounter={() =>
+          setView({ kind: "counter", dateKey: view.dateKey, playId: play.id })
+        }
+        onBackToPlay={() =>
+          setView({ kind: "play", dateKey: view.dateKey, playId: play.id })
+        }
+        onSaveInference={(cache) => {
+          commit((draft) => {
+            const s = ensureSession(draft, view.dateKey);
+            const p = findPlay(s, play.id);
+            if (!p) return;
+            p.inferCache = cache;
+            s.updatedAt = Date.now();
+          });
+        }}
+      />
+    );
+  }
+
+  return (
+    <div className="wrap">
+      <div className="card">不正な状態です。</div>
+    </div>
+  );
+}
+
+/* =========================
+   UI helpers
+   ========================= */
+function Header(props: { title: string; left?: React.ReactNode; right?: React.ReactNode }) {
+  return (
+    <div className="header">
+      <div className="headerSide">{props.left}</div>
+      <div className="headerTitle">{props.title}</div>
+      <div className="headerSide right">{props.right}</div>
+    </div>
+  );
+}
+
+function Modal(props: { title: string; children: React.ReactNode; onClose: () => void }) {
+  return (
+    <div className="modalBack" onClick={props.onClose}>
+      <div className="modalCard" onClick={(e) => e.stopPropagation()}>
+        <div className="modalHeader">
+          <div className="modalTitle">{props.title}</div>
+          <button className="btn" onClick={props.onClose}>
+            ×
+          </button>
+        </div>
+        <div className="modalBody">{props.children}</div>
+      </div>
+    </div>
+  );
+}
+
+function NumBox(props: { label: string; value: number; onChange: (v: number) => void }) {
+  return (
+    <div className="numBox">
+      <div className="numLabel">{props.label}</div>
+      <input
+        className="input"
+        inputMode="numeric"
+        value={String(props.value)}
+        onChange={(e) => {
+          const v = clampInt(parseSignedInt(e.target.value), 0, 9999999);
+          props.onChange(v);
+        }}
       />
     </div>
   );
 }
 
-function Header(props: { title: string; left?: React.ReactNode; right?: React.ReactNode }) {
+function SignedIntInput(props: {
+  value?: number;
+  onCommit: (v?: number) => void;
+  inputMode?: React.HTMLAttributes<HTMLInputElement>["inputMode"];
+}) {
+  const [text, setText] = useState<string>(props.value == null ? "" : String(props.value));
+
+  useEffect(() => {
+    const next = props.value == null ? "" : String(props.value);
+    // ユーザーが入力中に勝手に戻すのを防ぐため、完全一致のときだけ同期
+    if (text === next) return;
+    // value 変更（別画面から復帰/インポート等）は反映
+    setText(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.value]);
+
   return (
-    <div className="header">
-      <div className="hLeft">{props.left}</div>
-      <div className="hTitle">{props.title}</div>
-      <div className="hRight">{props.right}</div>
-    </div>
+    <input
+      className="input"
+      inputMode={props.inputMode ?? "numeric"}
+      value={text}
+      onChange={(e) => {
+        const t = e.target.value;
+        setText(t);
+
+        const s = (t ?? "").trim();
+        if (s === "") {
+          props.onCommit(undefined);
+          return;
+        }
+        if (s === "-") {
+          // 途中入力を許可（確定はしない）
+          return;
+        }
+        if (/^-?\d+$/.test(s)) {
+          props.onCommit(parseSignedInt(s));
+        }
+      }}
+      onBlur={() => {
+        const s = (text ?? "").trim();
+        if (s === "" || s === "-") {
+          setText("");
+          props.onCommit(undefined);
+          return;
+        }
+        if (/^-?\d+$/.test(s)) {
+          const v = parseSignedInt(s);
+          setText(String(v));
+          props.onCommit(v);
+        } else {
+          // 不正入力は元に戻す
+          const back = props.value == null ? "" : String(props.value);
+          setText(back);
+        }
+      }}
+    />
   );
 }
 
-function Footer(props: { onBackup: () => void; onImport: (file: File) => void; onGoToday: () => void }) {
-  return (
-    <div className="footer">
-      <button className="btn" onClick={props.onGoToday}>今日へ</button>
-      <button className="btn" onClick={props.onBackup}>バックアップ保存(JSON)</button>
-      <label className="btn">
-        バックアップ読込(JSON)
-        <input
-          type="file"
-          accept="application/json"
-          style={{ display: "none" }}
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (!f) return;
-            props.onImport(f);
-            e.currentTarget.value = "";
-          }}
-        />
-      </label>
-    </div>
-  );
+/* =========================
+   State helpers
+   ========================= */
+function ensureSession(state: AppState, dateKey: string): DaySession {
+  state.sessions ??= {};
+  if (!state.sessions[dateKey]) {
+    state.sessions[dateKey] = {
+      dateKey,
+      plays: [],
+      updatedAt: Date.now(),
+    };
+  }
+  return state.sessions[dateKey];
 }
 
-function BaseEditor(props: { play: Play; onSave: (next: Partial<Play>) => void }) {
-  const p = props.play;
-  const [baseG, setBaseG] = useState(String(p.baseGamesTotal ?? 0));
-  const [baseBB, setBaseBB] = useState(String(p.baseBigTotal ?? 0));
-  const [baseRB, setBaseRB] = useState(String(p.baseRegTotal ?? 0));
-  const [baseDiff, setBaseDiff] = useState(p.baseDiffTotal != null ? String(p.baseDiffTotal) : "");
-
-  return (
-    <>
-      <div className="row">
-        <label className="label">前任者G（累計）</label>
-        <input className="input" value={baseG} onChange={(e) => setBaseG(e.target.value)} inputMode="numeric" />
-      </div>
-      <div className="row">
-        <label className="label">前任者BB（累計）</label>
-        <input className="input" value={baseBB} onChange={(e) => setBaseBB(e.target.value)} inputMode="numeric" />
-      </div>
-      <div className="row">
-        <label className="label">前任者RB（累計）</label>
-        <input className="input" value={baseRB} onChange={(e) => setBaseRB(e.target.value)} inputMode="numeric" />
-      </div>
-      <div className="row">
-        <label className="label">前任者差枚（累計）</label>
-        <input className="input" value={baseDiff} onChange={(e) => setBaseDiff(e.target.value)} inputMode="text" />
-      </div>
-      <div className="muted">
-        ブドウ逆算（差枚）には「前任者差枚」と「最終差枚」が必要です。差枚は表示器の累計値を入れてください。
-      </div>
-
-      <div style={{ marginTop: 10 }}>
-        <button
-          className="btn primary"
-          onClick={() => {
-            const next = {
-              baseGamesTotal: clampInt(Number(baseG), 0),
-              baseBigTotal: clampInt(Number(baseBB), 0),
-              baseRegTotal: clampInt(Number(baseRB), 0),
-              baseDiffTotal: parseSignedInt(baseDiff) ?? undefined,
-            };
-            props.onSave(next);
-          }}
-        >
-          保存
-        </button>
-      </div>
-    </>
-  );
+function findPlay(session: DaySession, playId: string): Play | null {
+  return session.plays.find((p) => p.id === playId) ?? null;
 }
-
-function CheckpointEditor(props: { play: Play; onAdd: (cp: Checkpoint) => void }) {
-  const latest = latestCheckpoint(props.play);
-
-  const [g, setG] = useState(latest ? String(latest.gamesTotal) : "");
-  const [b, setB] = useState(latest ? String(latest.bigTotal) : "");
-  const [r, setR] = useState(latest ? String(latest.regTotal) : "");
-
-  return (
-    <>
-      <div className="row">
-        <label className="label">累計G（表示器）</label>
-        <input className="input" value={g} onChange={(e) => setG(e.target.value)} inputMode="numeric" />
-      </div>
-      <div className="row">
-        <label className="label">累計BB（表示器）</label>
-        <input className="input" value={b} onChange={(e) => setB(e.target.value)} inputMode="numeric" />
-      </div>
-      <div className="row">
-        <label className="label">累計RB（表示器）</label>
-        <input className="input" value={r} onChange={(e) => setR(e.target.value)} inputMode="numeric" />
-      </div>
-
-      <div className="muted">
-        途中経過は何回入れてもOK。差枚はここでは入力しません（最終だけ入力）。
-      </div>
-
-      <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
-        <button
-          className="btn primary"
-          onClick={() => {
-            const gamesTotal = clampInt(Number(g), 0);
-            const bigTotal = clampInt(Number(b), 0);
-            const regTotal = clampInt(Number(r), 0);
-
-            props.onAdd({
-              id: uid("cp"),
-              ts: Date.now(),
-              gamesTotal,
-              bigTotal,
-              regTotal,
-            });
-          }}
-          disabled={g.trim() === "" || b.trim() === "" || r.trim() === ""}
-        >
-          追加
-        </button>
-
-        <button
-          className="btn"
-          onClick={() => {
-            if (!latest) return;
-            setG(String(latest.gamesTotal));
-            setB(String(latest.bigTotal));
-            setR(String(latest.regTotal));
-          }}
-          disabled={!latest}
-        >
-          最新値を再表示
-        </button>
-      </div>
-    </>
-  );
-}
-
-function FinalDiffEditor(props: { play: Play; onSave: (finalDiffTotal?: number) => void }) {
-  const [v, setV] = useState(props.play.finalDiffTotal != null ? String(props.play.finalDiffTotal) : "");
-
-  return (
-    <>
-      <div className="row">
-        <label className="label">最終差枚（累計）</label>
-        <input className="input" value={v} onChange={(e) => setV(e.target.value)} inputMode="text" />
-      </div>
-
-      <div className="muted">
-        やめ時に1回入力。ブドウ逆算（差枚）は「前任者差枚」と「最終差枚」が揃うと計算します。
-      </div>
-
-      <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
-        <button className="btn primary" onClick={() => props.onSave(parseSignedInt(v) ?? undefined)}>保存</button>
-        <button className="btn" onClick={() => { setV(""); props.onSave(undefined); }}>クリア</button>
-      </div>
-    </>
-  );
-}
-
-export default App;

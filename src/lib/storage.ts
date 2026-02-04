@@ -18,7 +18,6 @@ export function saveState(state: AppState): void {
   localStorage.setItem(KEY, JSON.stringify(state));
 }
 
-// バックアップ（JSONをダウンロード）
 export function downloadBackup(state: AppState) {
   const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
@@ -29,7 +28,6 @@ export function downloadBackup(state: AppState) {
   URL.revokeObjectURL(url);
 }
 
-// バックアップ読み込み
 export async function importBackupFile(file: File): Promise<AppState> {
   const text = await file.text();
   const obj = JSON.parse(text) as AppState;
