@@ -1,0 +1,22 @@
+{
+  "id": "GIRLS",
+  "name": "ジャグラーガールズ",
+  "visibleMetrics": ["singleReg", "grape", "singleBig", "cherryReg", "cherryBig", "totalReg", "totalBig"],
+  "inferMetrics": ["singleReg", "grape", "singleBig", "cherryReg", "cherryBig"],
+  "weights": {
+    "singleReg": 1.0,
+    "grape": 0.6,
+    "singleBig": 0.8,
+    "cherryReg": 0.8,
+    "cherryBig": 0.5
+  },
+  "odds": {
+    "totalBig": [273.1, 270.8, 260.1, 250.1, 243.6, 226.0],
+    "totalReg": [381.0, 350.5, 316.6, 281.3, 270.8, 252.1],
+    "grape": [6.01, 6.01, 6.01, 6.01, 5.92, 5.89],
+    "singleBig": [387.787, 381.023, 370.260, 350.460, 337.814, 312.076],
+    "singleReg": [520.127, 481.882, 436.907, 397.188, 383.251, 358.120],
+    "cherryBig": [923.042, 936.229, 873.813, 873.813, 873.813, 819.200],
+    "cherryReg": [1424.696, 1285.020, 1149.754, 963.765, 923.042, 851.117]
+  }
+}

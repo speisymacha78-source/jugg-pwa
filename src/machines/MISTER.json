@@ -1,0 +1,16 @@
+{
+  "id": "MISTER",
+  "name": "ミスタージャグラー",
+  "visibleMetrics": ["totalReg", "grape", "totalBig"],
+  "inferMetrics": ["totalReg", "grape", "totalBig"],
+  "weights": {
+    "totalReg": 1.0,
+    "grape": 0.6,
+    "totalBig": 0.7
+  },
+  "odds": {
+    "totalBig": [268.6, 267.5, 260.1, 249.2, 240.9, 237.4],
+    "totalReg": [374.5, 354.2, 331.0, 291.3, 257.0, 237.4],
+    "grape": [6.22, 6.16, 6.12, 6.09, 6.05, 6.02]
+  }
+}

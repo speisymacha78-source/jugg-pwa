@@ -1,0 +1,24 @@
+{
+  "id": "ULTRAMIRA",
+  "name": "ウルトラミラクルジャグラー",
+  "visibleMetrics": ["singleReg", "grape", "singleBig", "nonOverlapCherry", "cherryReg", "cherryBig", "totalReg", "totalBig"],
+  "inferMetrics": ["singleReg", "grape", "singleBig", "nonOverlapCherry", "cherryReg", "cherryBig"],
+  "weights": {
+    "singleReg": 1.0,
+    "grape": 0.6,
+    "singleBig": 0.8,
+    "nonOverlapCherry": 0.5,
+    "cherryReg": 0.8,
+    "cherryBig": 0.5
+  },
+  "odds": {
+    "totalBig": [267.5, 261.1, 256.0, 242.7, 233.2, 216.3],
+    "totalReg": [425.6, 402.1, 350.5, 322.8, 297.9, 277.7],
+    "grape": [5.94, 5.938, 5.936, 5.934, 5.933, 5.929],
+    "nonOverlapCherry": [35.54, 35.54, 34.86, 34.79, 34.13, 33.44],
+    "singleBig": [334.3673, 332.6701, 329.3266, 310.5972, 304.8186, 281.2704],
+    "singleReg": [595.7818, 546.1333, 489.0746, 436.9067, 414.7848, 378.8208],
+    "cherryBig": [1337.4694, 1213.6296, 1149.7544, 1110.7797, 992.9697, 936.2286],
+    "cherryReg": [1489.4545, 1524.0930, 1236.5283, 1236.5283, 1057.0323, 1040.2540]
+  }
+}
